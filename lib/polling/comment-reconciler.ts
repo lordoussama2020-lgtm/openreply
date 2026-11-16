@@ -7,8 +7,9 @@
  * replied to, never DM'd.
  *
  * This sweep is deliberately narrow. For each active campaign it looks only at
- * that campaign's post, only at recent comments, and acts on a comment ONLY when
- * both are true:
+ * that campaign's post — or, for "All posts & ads" campaigns, the recent feed
+ * plus ad media already seen in webhooks — only at recent comments, and acts
+ * on a comment ONLY when both are true:
  *   1. the comment matches the campaign keyword, and
  *   2. the account owner has not already replied to it.
  * The reply check reads the comment's actual replies on Instagram, so a comment
@@ -171,7 +172,10 @@ async function sweepCampaign({
   }
 
   // Which media this campaign covers: its own post, or the recent feed if it
-  // matches any post.
+  // matches any post. Ads (including dark posts created in Ads Manager, which
+  // never appear in the account's published media list) are recovered from
+  // comment webhooks already received for the account — the same source the
+  // per-post sweep uses for boosted posts.
   const mediaIds: string[] = [];
   if (automation.postId) {
     mediaIds.push(automation.postId);
@@ -186,12 +190,14 @@ async function sweepCampaign({
     } catch (error) {
       stat.errors.push(`Media list: ${errMessage(error)}`);
     }
+    mediaIds.push(...(await adMediaForAccount(account.instagramId)));
   }
-  if (mediaIds.length === 0) return stat;
+  const uniqueMediaIds = [...new Set(mediaIds)];
+  if (uniqueMediaIds.length === 0) return stat;
 
   const queue = getDMQueue();
 
-  for (const mediaId of mediaIds) {
+  for (const mediaId of uniqueMediaIds) {
     let comments: InstagramComment[];
     try {
       comments = await getRecentMediaComments({
@@ -325,6 +331,45 @@ export async function adMediaFor(postId: string): Promise<string[]> {
       .filter((id): id is string => Boolean(id) && id !== postId);
   } catch {
     // A failure here must not stop the sweep: the post itself is still checked.
+    return [];
+  }
+}
+
+/**
+ * Ad media ids seen in comment webhooks for one account.
+ *
+ * Same recovery as adMediaFor, but account-wide instead of per post: a dark
+ * post created in Ads Manager has no organic post to hang the lookup off, so
+ * the only way the sweep can ever see it is through a webhook that already
+ * arrived for it. Most-recent first and capped, so a busy advertiser can't
+ * turn one sweep into hundreds of comment-list calls (which Instagram
+ * rate-limits aggressively, error 368).
+ */
+export async function adMediaForAccount(
+  instagramAccountId: string
+): Promise<string[]> {
+  try {
+    const rows = await prisma.$queryRaw<{
+      mediaId: string | null;
+      lastSeen: Date;
+    }[]>`
+      SELECT change->'value'->'media'->>'id' AS "mediaId",
+             MAX(w."createdAt") AS "lastSeen"
+      FROM "WebhookEvent" w,
+           jsonb_array_elements(w.payload::jsonb->'entry') entry,
+           jsonb_array_elements(entry->'changes') change
+      WHERE change->>'field' = 'comments'
+        AND entry->>'id' = ${instagramAccountId}
+        AND w."createdAt" > now() - interval '90 days'
+      GROUP BY 1
+      ORDER BY 2 DESC
+      LIMIT 20
+    `;
+    return rows
+      .map((r) => r.mediaId)
+      .filter((id): id is string => Boolean(id));
+  } catch {
+    // A failure here must not stop the sweep: the published feed is still checked.
     return [];
   }
 }

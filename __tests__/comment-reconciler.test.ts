@@ -7,7 +7,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockPrisma, queueAdd, readComments } = vi.hoisted(() => ({
+const { mockPrisma, queueAdd, readComments, listMedia } = vi.hoisted(() => ({
   mockPrisma: {
     $queryRaw: vi.fn(),
     automation: { findMany: vi.fn() },
@@ -16,6 +16,7 @@ const { mockPrisma, queueAdd, readComments } = vi.hoisted(() => ({
   },
   queueAdd: vi.fn(),
   readComments: vi.fn(),
+  listMedia: vi.fn(),
 }));
 vi.mock("@/lib/queue/client", () => ({
   getDMQueue: () => ({ add: queueAdd }),
@@ -27,12 +28,14 @@ vi.mock("@/lib/instagram/provider", async (importOriginal) => ({
     accessToken: "local-test",
   }),
   getRecentMediaComments: readComments,
+  getUserMedia: listMedia,
 }));
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 
 import {
   adMediaFor,
+  adMediaForAccount,
   reconcileComments,
 } from "../lib/polling/comment-reconciler";
 
@@ -73,6 +76,106 @@ describe("adMediaFor", () => {
   it("swallows a query failure, leaving the post itself still swept", async () => {
     mockPrisma.$queryRaw.mockRejectedValue(new Error("connection lost"));
     await expect(adMediaFor(POST)).resolves.toEqual([]);
+  });
+});
+
+describe("adMediaForAccount", () => {
+  const AD_DARK = "17900000000000001";
+
+  beforeEach(() => {
+    mockPrisma.$queryRaw.mockReset();
+  });
+
+  it("returns the ad media ids seen for the account", async () => {
+    mockPrisma.$queryRaw.mockResolvedValue([
+      { mediaId: AD_DARK, lastSeen: new Date() },
+    ]);
+    await expect(adMediaForAccount("owner")).resolves.toEqual([AD_DARK]);
+  });
+
+  it("drops rows without a media id", async () => {
+    mockPrisma.$queryRaw.mockResolvedValue([
+      { mediaId: null, lastSeen: new Date() },
+      { mediaId: AD_DARK, lastSeen: new Date() },
+    ]);
+    await expect(adMediaForAccount("owner")).resolves.toEqual([AD_DARK]);
+  });
+
+  it("returns nothing when no ad comment ever arrived", async () => {
+    mockPrisma.$queryRaw.mockResolvedValue([]);
+    await expect(adMediaForAccount("owner")).resolves.toEqual([]);
+  });
+
+  it("swallows a query failure, leaving the published feed still swept", async () => {
+    mockPrisma.$queryRaw.mockRejectedValue(new Error("connection lost"));
+    await expect(adMediaForAccount("owner")).resolves.toEqual([]);
+  });
+});
+
+describe("all-posts-and-ads campaigns also sweep ad media", () => {
+  const AD_DARK = "17900000000000001";
+
+  beforeEach(() => {
+    queueAdd.mockReset();
+    readComments.mockReset();
+    listMedia.mockReset().mockResolvedValue([]);
+    mockPrisma.$queryRaw.mockReset().mockResolvedValue([
+      { mediaId: AD_DARK, lastSeen: new Date() },
+    ]);
+    mockPrisma.dmLog.findMany.mockReset().mockResolvedValue([]);
+    mockPrisma.operationalEvent.create.mockResolvedValue({});
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        id: "campaign-any",
+        name: "Formation (all posts & ads)",
+        workspaceId: "workspace",
+        postId: null,
+        matchAnyPost: true,
+        matchAnyWord: false,
+        keywords: ["FORMATION"],
+        wholeWordMatch: true,
+        publicReplyEnabled: false,
+        instagramAccount: {
+          id: "connection",
+          instagramId: "owner",
+          username: "owner",
+          provider: "META",
+          accessToken: "test",
+          workspaceId: "workspace",
+          zernioAccountId: null,
+        },
+      },
+    ]);
+    readComments.mockResolvedValue([
+      {
+        id: "ad-comment-1",
+        text: "FORMATION please!",
+        from: { id: "reader", username: "reader" },
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  });
+
+  it("enqueues a keyword comment left on a dark-post ad the campaign never targeted", async () => {
+    await reconcileComments();
+
+    expect(queueAdd).toHaveBeenCalledWith(
+      "process-comment",
+      expect.objectContaining({
+        commentId: "ad-comment-1",
+        mediaId: AD_DARK,
+        originalMediaId: undefined,
+        source: "POLLING",
+      })
+    );
+  });
+
+  it("does not sweep ad media when the webhook recovery finds none", async () => {
+    mockPrisma.$queryRaw.mockResolvedValue([]);
+    await reconcileComments();
+
+    expect(readComments).not.toHaveBeenCalled();
+    expect(queueAdd).not.toHaveBeenCalled();
   });
 });
 

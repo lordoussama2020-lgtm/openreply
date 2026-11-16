@@ -154,7 +154,7 @@ export default function CampaignDetailPage() {
   const hasSecondLink = Boolean(campaign.trackedLinks?.[1]?.destinationUrl);
 
   const trigger = campaign.matchAnyPost
-    ? t("Any post or reel")
+    ? t("All posts & ads")
     : campaign.pendingNextReel
       ? t("Your next reel")
       : t("A specific post or reel");

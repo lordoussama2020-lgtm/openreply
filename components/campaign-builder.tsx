@@ -693,8 +693,13 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             checked={triggerScope === "any"}
             onSelect={() => setTriggerScope("any")}
           >
-            {t("any post or reel")}
+            {t("All posts & ads")}
           </Radio>
+          {triggerScope === "any" && (
+            <p className="text-xs text-muted">
+              {t("Also replies to comments on your ads, including ads without a published post.")}
+            </p>
+          )}
           <Radio
             checked={triggerScope === "next"}
             onSelect={() => setTriggerScope("next")}

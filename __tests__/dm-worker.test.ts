@@ -321,6 +321,93 @@ describe("DM Worker — comments left on an ad", () => {
   });
 });
 
+describe("DM Worker — comments on a dark-post ad", () => {
+  const anyPostAutomation = {
+    ...mockAutomation,
+    id: "auto_any",
+    postId: null,
+    matchAnyPost: true,
+  };
+  const specificAutomation = {
+    ...mockAutomation,
+    id: "auto_specific",
+    postId: "media_101",
+    matchAnyPost: false,
+  };
+
+  // Stand in for Prisma: return only the automations the production OR
+  // would actually return for this comment — a postId clause matches only
+  // the campaign bound to that media, while a matchAnyPost clause matches
+  // every all-posts-and-ads campaign. postId is string | null because an
+  // all-posts-and-ads campaign has no bound post.
+  function mockMatchingAutomations(
+    automations: Array<
+      Omit<typeof mockAutomation, "postId"> & { postId: string | null }
+    >
+  ) {
+    mockPrisma.automation.findMany.mockImplementation(
+      async (args: {
+        where?: { OR?: Array<Record<string, unknown>> };
+      }) => {
+        const clauses = args.where?.OR ?? [];
+        return automations.filter((a) =>
+          clauses.some((clause) => {
+            if ("postId" in clause) return clause.postId === a.postId;
+            if ("matchAnyPost" in clause)
+              return clause.matchAnyPost === true && a.matchAnyPost;
+            return false;
+          })
+        );
+      }
+    );
+  }
+
+  // A dark post created from scratch in Ads Manager: the comment carries the
+  // ad's own media id and no original_media_id, so no per-post campaign can
+  // ever claim it.
+  const darkPostJob = () =>
+    createMockJob({
+      ...mockJobData,
+      commentText: "FORMATION please!",
+      mediaId: "ad_media_dark",
+    });
+
+  it("replies when an all-posts-and-ads campaign matches, even though no per-post campaign targets the ad", async () => {
+    mockMatchingAutomations([specificAutomation, anyPostAutomation]);
+    const processor = getProcessor();
+
+    await processor(darkPostJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
+    expect(mockSendPrivateReply).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      expect.stringContaining("https://example.com")
+    );
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          automationId_commentId: {
+            automationId: "auto_any",
+            commentId: "comment_555",
+          },
+        },
+      })
+    );
+  });
+
+  it("does not reply when only per-post campaigns exist and none targets the ad", async () => {
+    mockMatchingAutomations([specificAutomation]);
+    const processor = getProcessor();
+
+    await processor(darkPostJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+  });
+});
+
 describe("DM Worker — Full Pipeline", () => {
   it("should send a private reply for a matching comment", async () => {
     const processor = getProcessor();

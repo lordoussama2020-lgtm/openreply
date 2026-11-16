@@ -134,6 +134,42 @@ describe("parseCommentEvents", () => {
     expect(events[0].originalMediaId).toBe("media_101");
   });
 
+  it("keeps a dark-post ad comment usable when there is no organic post", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        {
+          id: "page_123",
+          time: 1234567890,
+          changes: [
+            {
+              field: "comments",
+              value: {
+                id: "comment_456",
+                text: "FORMATION",
+                from: { id: "user_789", username: "testuser" },
+                // An ad created from scratch in Ads Manager: its own media
+                // id, no organic post behind it, so there is no
+                // original_media_id to fall back on. The campaign matching
+                // this comment can only be an all-posts-and-ads one.
+                media: {
+                  id: "ad_media_dark",
+                  ad_id: "ad_123",
+                  media_product_type: "AD",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const events = parseCommentEvents(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0].mediaId).toBe("ad_media_dark");
+    expect(events[0].originalMediaId).toBeUndefined();
+  });
+
   it("leaves originalMediaId unset when it repeats the media id", () => {
     const payload = {
       object: "instagram",

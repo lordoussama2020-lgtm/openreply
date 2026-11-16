@@ -1,3 +1,4 @@
+// deploy trigger: Railway auto-deploy active — 2026-11-16
 /**
  * Comment reconciliation (polling safety net).
  *
